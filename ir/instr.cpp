@@ -676,7 +676,7 @@ static expr fminimum_fmaximum(State &s, const expr &a, const expr &b,
   return expr::mkIf(a.isNaN(), a, expr::mkIf(b.isNaN(), b, e));
 }
 
-static expr any_fp_zero(State &s, const expr &v) {
+static expr any_fp_zero(State &s, expr v) {
   expr is_zero = v.isFPZero();
   if (is_zero.isFalse())
     return v;
@@ -688,7 +688,7 @@ static expr any_fp_zero(State &s, const expr &v) {
       expr a, b;
       if (cond.isAnd(a, b) && a.isVar() && a.fn_name().starts_with("anyzero") &&
           b.isIsFPZero())
-        return any_fp_zero(s, val);
+        return any_fp_zero(s, std::move(val));
     }
   }
 
@@ -767,11 +767,11 @@ static StateValue fm_poison(State &s, expr a, const expr &ap, expr b,
   auto &fpty = *from_ty.getAsFloatType();
 
   if (fmath.flags & FastMathFlags::NSZ) {
-    a = any_fp_zero(s, a);
+    a = any_fp_zero(s, std::move(a));
     if (nary >= 2) {
-      b = any_fp_zero(s, b);
+      b = any_fp_zero(s, std::move(b));
       if (nary == 3)
-        c = any_fp_zero(s, c);
+        c = any_fp_zero(s, std::move(c));
     }
   }
 
@@ -824,8 +824,6 @@ static StateValue fm_poison(State &s, expr a, const expr &ap, expr b,
     val = expr::mkUF("afn", { val }, val);
     s.doesApproximation("afn", val);
   }
-  if (!flags_in_only && fmath.flags & FastMathFlags::NSZ)
-    val = any_fp_zero(s, std::move(val));
 
   if (!bitwise && val.isFloat()) {
     val = handle_subnormal(s,
@@ -2481,7 +2479,7 @@ MemInstr::ByteAccessInfo FnCall::getByteAccessInfo() const {
 
   // calloc style
   if (attrs.has(AllocKind::Zeroed)) {
-    auto info = ByteAccessInfo::intOnly(1);
+    auto info = ByteAccessInfo::intStore(1);
     auto [alloc, align] = getMaxAllocSize();
     if (alloc)
       info.byteSize = gcd(alloc, align);
@@ -3032,7 +3030,10 @@ expr ICmp::getTypeConstraints(const Function &f) const {
 }
 
 unique_ptr<Instr> ICmp::dup(Function &f, const string &suffix) const {
-  return make_unique<ICmp>(getType(), getName() + suffix, cond, *a, *b, flags);
+  auto dup = make_unique<ICmp>(getType(), getName() + suffix, cond, *a, *b,
+                               flags);
+  dup->setPtrCmpMode(pcmode);
+  return dup;
 }
 
 
@@ -3293,7 +3294,7 @@ expr Phi::getTypeConstraints(const Function &f) const {
 }
 
 unique_ptr<Instr> Phi::dup(Function &f, const string &suffix) const {
-  auto phi = make_unique<Phi>(getType(), getName() + suffix);
+  auto phi = make_unique<Phi>(getType(), getName() + suffix, fmath);
   for (auto &[val, bb] : values) {
     phi->addValue(*val, string(bb));
   }
@@ -3879,10 +3880,18 @@ bool MemInstr::hasSideEffects() const {
   return true;
 }
 
-MemInstr::ByteAccessInfo MemInstr::ByteAccessInfo::intOnly(unsigned bytesz) {
+MemInstr::ByteAccessInfo MemInstr::ByteAccessInfo::intLoad(unsigned bytesz) {
   ByteAccessInfo info;
   info.byteSize = bytesz;
-  info.hasIntByteAccess = true;
+  info.doesIntLoad = true;
+  info.observesAddresses = true;
+  return info;
+}
+
+MemInstr::ByteAccessInfo MemInstr::ByteAccessInfo::intStore(unsigned bytesz) {
+  ByteAccessInfo info;
+  info.byteSize = bytesz;
+  info.doesIntStore = true;
   return info;
 }
 
@@ -3896,16 +3905,14 @@ MemInstr::ByteAccessInfo
 MemInstr::ByteAccessInfo::get(const Type &t, bool store, unsigned align) {
   bool ptr_access = hasPtr(t);
   ByteAccessInfo info;
-  info.hasIntByteAccess = t.enforcePtrOrVectorType().isFalse();
-  info.doesPtrStore     = ptr_access && store;
-  info.doesPtrLoad      = ptr_access && !store;
-  info.byteSize         = gcd(align, getCommonAccessSize(t));
-  info.subByteAccess    = t.maxSubBitAccess();
+  info.doesIntLoad   = !ptr_access && !store;
+  info.doesIntStore  = !ptr_access && store;
+  info.doesPtrLoad   = ptr_access && !store;
+  info.doesPtrStore  = ptr_access && store;
+  info.byteSize      = gcd(align, getCommonAccessSize(t));
+  info.subByteAccess = t.maxSubBitAccess();
+  info.observesAddresses = info.doesIntLoad;
   return info;
-}
-
-MemInstr::ByteAccessInfo MemInstr::ByteAccessInfo::full(unsigned byteSize) {
-  return { true, true, true, true, byteSize, 0 };
 }
 
 
@@ -4444,7 +4451,7 @@ MemInstr::ByteAccessInfo Memset::getByteAccessInfo() const {
   unsigned byteSize = 1;
   if (auto bs = getInt(*bytes))
     byteSize = gcd(align, *bs);
-  return ByteAccessInfo::intOnly(byteSize);
+  return ByteAccessInfo::intStore(byteSize);
 }
 
 vector<Value*> Memset::operands() const {
@@ -4518,7 +4525,7 @@ MemInstr::ByteAccessInfo MemsetPattern::getByteAccessInfo() const {
   unsigned byteSize = 1;
   if (auto bs = getInt(*bytes))
     byteSize = *bs;
-  return ByteAccessInfo::intOnly(byteSize);
+  return ByteAccessInfo::intStore(byteSize);
 }
 
 vector<Value*> MemsetPattern::operands() const {
@@ -4562,49 +4569,6 @@ unique_ptr<Instr> MemsetPattern::dup(Function &f, const string &suffix) const {
 }
 
 
-DEFINE_AS_RETZEROALIGN(FillPoison, getMaxAllocSize)
-DEFINE_AS_RETZERO(FillPoison, getMaxGEPOffset)
-
-uint64_t FillPoison::getMaxAccessSize() const {
-  return getGlobalVarSize(ptr);
-}
-
-MemInstr::ByteAccessInfo FillPoison::getByteAccessInfo() const {
-  return ByteAccessInfo::intOnly(1);
-}
-
-vector<Value*> FillPoison::operands() const {
-  return { ptr };
-}
-
-bool FillPoison::propagatesPoison() const {
-  return true;
-}
-
-void FillPoison::rauw(const Value &what, Value &with) {
-  RAUW(ptr);
-}
-
-void FillPoison::print(ostream &os) const {
-  os << "fillpoison " << *ptr;
-}
-
-StateValue FillPoison::toSMT(State &s) const {
-  auto &vptr = s.getWellDefinedPtr(*ptr);
-  Memory &m = s.getMemory();
-  m.fillPoison(Pointer(m, vptr).getBid());
-  return {};
-}
-
-expr FillPoison::getTypeConstraints(const Function &f) const {
-  return ptr->getType().enforcePtrType();
-}
-
-unique_ptr<Instr> FillPoison::dup(Function &f, const string &suffix) const {
-  return make_unique<FillPoison>(*ptr);
-}
-
-
 DEFINE_AS_RETZEROALIGN(Memcpy, getMaxAllocSize)
 DEFINE_AS_RETZERO(Memcpy, getMaxGEPOffset)
 
@@ -4620,9 +4584,7 @@ MemInstr::ByteAccessInfo Memcpy::getByteAccessInfo() const {
   // FIXME: memcpy doesn't have multi-byte support
   // Memcpy does not have sub-byte access, unless the sub-byte type appears
   // at other instructions
-  auto info = ByteAccessInfo::full(1);
-  info.observesAddresses = false;
-  return info;
+  return { false, true, false, true, false, 1, 0 };
 }
 
 vector<Value*> Memcpy::operands() const {
@@ -4700,9 +4662,7 @@ uint64_t Memcmp::getMaxAccessSize() const {
 }
 
 MemInstr::ByteAccessInfo Memcmp::getByteAccessInfo() const {
-  auto info = ByteAccessInfo::anyType(1);
-  info.observesAddresses = true;
-  return info;
+  return ByteAccessInfo::intLoad(1);
 }
 
 vector<Value*> Memcmp::operands() const {
@@ -4775,11 +4735,7 @@ StateValue Memcmp::toSMT(State &s) const {
     }
 
     expr val_eq = val1.forceCastToInt() == val2.forceCastToInt();
-
-    // allow null <-> 0 comparison
-    expr np
-      = (is_ptr1 == is_ptr2 || val1.isZero() || val2.isZero()) &&
-        !val1.isPoison() && !val2.isPoison();
+    expr np = !val1.isPoison() && !val2.isPoison();
 
     return { expr::mkIf(val_eq, zero, result_neq),
              std::move(np), {},
@@ -4810,7 +4766,7 @@ uint64_t Strlen::getMaxAccessSize() const {
 }
 
 MemInstr::ByteAccessInfo Strlen::getByteAccessInfo() const {
-  return ByteAccessInfo::intOnly(1); /* strlen raises UB on ptr bytes */
+  return ByteAccessInfo::intLoad(1);
 }
 
 vector<Value*> Strlen::operands() const {
