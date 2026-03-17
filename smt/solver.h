@@ -133,6 +133,10 @@ public:
     return m;
   }
 
+  const answer getAnswer() const {
+    return a;
+  }
+
 private:
   Model m;
   answer a;

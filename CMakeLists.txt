@@ -140,7 +140,7 @@ set(UTIL_SRCS
   util/version.cpp
 )
 
-if (BUILD_TV)
+if (BUILD_TV OR BUILD_LLVM_UTILS)
   set(UTIL_SRCS
     ${UTIL_SRCS}
     util/parallel.cpp
@@ -213,6 +213,11 @@ if (BUILD_LLVM_UTILS OR BUILD_TV)
   )
   target_compile_options(alive-exec PRIVATE -fexceptions)
 
+  add_llvm_executable(alive-red
+    "tools/alive-red.cpp"
+  )
+  target_compile_options(alive-red PRIVATE -fexceptions)
+
 else()
   set(LLVM_UTIL_SRCS "")
 endif()
@@ -260,7 +265,8 @@ if (BUILD_LLVM_UTILS OR BUILD_TV)
   target_link_libraries(alive-tv PRIVATE ${ALIVE_LIBS_LLVM} ${Z3_LIBRARIES} ${HIREDIS_LIBRARIES} ${llvm_libs})
   target_link_libraries(quick-fuzz PRIVATE ${ALIVE_LIBS_LLVM} ${Z3_LIBRARIES} ${HIREDIS_LIBRARIES} ${llvm_libs})
   target_link_libraries(alive-exec PRIVATE ${ALIVE_LIBS_LLVM} ${Z3_LIBRARIES} ${HIREDIS_LIBRARIES} ${llvm_libs})
-  install(TARGETS alive-tv quick-fuzz alive-exec)
+  target_link_libraries(alive-red PRIVATE ${ALIVE_LIBS_LLVM} ${Z3_LIBRARIES} ${HIREDIS_LIBRARIES} ${llvm_libs})
+  install(TARGETS alive-tv quick-fuzz alive-exec alive-red)
 endif()
 
 target_link_libraries(alive PRIVATE ${Z3_LIBRARIES} ${HIREDIS_LIBRARIES})

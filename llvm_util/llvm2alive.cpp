@@ -1458,6 +1458,8 @@ public:
       }
 
       // non-relevant for correctness
+      case LLVMContext::MD_tbaa:
+      case LLVMContext::MD_tbaa_struct:
       case LLVMContext::MD_loop:
       case LLVMContext::MD_nosanitize:
       case LLVMContext::MD_prof:
@@ -1598,8 +1600,7 @@ public:
       case llvm::Attribute::Captures:
         if (capturesNothing(llvmattr.getCaptureInfo()))
           attrs.set(ParamAttrs::NoCapture);
-        else
-          errorAttr(llvmattr); // TODO: support other captures
+        // else: drop partial captures info (sound relaxation)
         break;
 
       case llvm::Attribute::ReadOnly:
@@ -1670,9 +1671,11 @@ public:
 
       case llvm::Attribute::DeadOnReturn: {
         attrs.set(ParamAttrs::DeadOnReturn);
+#if LLVM_VERSION_MAJOR >= 23
         const auto &info = llvmattr.getDeadOnReturnInfo();
         if (!info.coversAllReachableMemory())
           attrs.deadOnReturnBytes = info.getNumberOfDeadBytes();
+#endif
         break;
       }
 

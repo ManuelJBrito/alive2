@@ -16,4 +16,6 @@ public:
   ~Cache();
 #endif
   bool lookup(const std::string &s);
+  bool get(const std::string &key, std::string &value);
+  void set(const std::string &key, const std::string &value);
 };

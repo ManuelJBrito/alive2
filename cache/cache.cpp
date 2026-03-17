@@ -73,6 +73,16 @@ static crc_t string_crc(const string &s) {
   return crc_finalize(crc_update(crc_init(), s.data(), s.size()));
 }
 
+bool Cache::get(const string &key, string &value) {
+  string crc_key = "red:" + to_string(string_crc(key));
+  return remote_get(crc_key, value, ctx);
+}
+
+void Cache::set(const string &key, const string &value) {
+  string crc_key = "red:" + to_string(string_crc(key));
+  remote_set(crc_key, value, ctx);
+}
+
 bool Cache::lookup(const string &s) {
   static const string default_value("XXX");
   // Alive IR is bulky, so send a hash of it over to the cache. If

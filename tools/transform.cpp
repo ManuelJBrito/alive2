@@ -413,7 +413,7 @@ static void instantiate_undef(const Input *in, map<expr, expr> &instances,
   instances = std::move(instances2);
 }
 
-static expr preprocess(const Transform &t, const set<expr> &qvars0,
+expr tools::preprocess(const Transform &t, const set<expr> &qvars0,
                        const set<expr> &undef_qvars, expr &&e) {
   if (hit_half_memory_limit())
     return expr::mkForAll(qvars0, std::move(e));
@@ -992,7 +992,7 @@ static uint64_t aligned_alloc_size(uint64_t size, uint64_t align) {
   return add_saturate(size, align - 1);
 }
 
-static void calculateAndInitConstants(Transform &t) {
+void tools::calculateAndInitConstants(Transform &t) {
   if (!bits_program_pointer)
     initBitsProgramPointer(t);
 
@@ -1643,7 +1643,7 @@ static map<string_view, Instr*> can_remove_init(Function &fn) {
   return to_remove;
 }
 
-static void remove_unreachable_bbs(Function &f) {
+void remove_unreachable_bbs(Function &f) {
   vector<BasicBlock*> wl = { &f.getFirstBB() };
   set<BasicBlock*> reachable;
 
